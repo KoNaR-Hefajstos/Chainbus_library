@@ -121,18 +121,28 @@ void chainbus_delay_s(uint32_t s)
 	chainbus_delay_ms(s * 1000);
 }
 
-void chainbus_deselect_hat(Hat_position pos)
+chainbus_select_return_t chainbus_deselect_hat(Hat_position pos)
 {
+	if (chainbus_mutex == NULL)
+		return chainbus_select_not_initialised;
+
 	gpio_set_level(PIN_SEL_EN, 1); // Disable decoder
 	gpio_set_level(PIN_SEL_A0, 0);
 	gpio_set_level(PIN_SEL_A1, 0);
 	gpio_set_level(PIN_SEL_A2, 0);
 
-	xSemaphoreGive(chainbus_mutex);
+	// pdFALSE means this task was not holding the lock, so the select it should have been
+	// paired with never happened. The bus is deselected either way.
+	if (xSemaphoreGive(chainbus_mutex) != pdTRUE)
+		return chainbus_select_generic_error;
+
+	return chainbus_select_ok;
 }
 
-void chainbus_select_hat(Hat_position pos)
+chainbus_select_return_t chainbus_select_hat(Hat_position pos)
 {
+	if (chainbus_mutex == NULL)
+		return chainbus_select_not_initialised;
 
 	xSemaphoreTake(chainbus_mutex, portMAX_DELAY);
 
@@ -192,31 +202,66 @@ void chainbus_select_hat(Hat_position pos)
 		// Positions are 1-8. Anything else leaves the decoder disabled so the traffic
 		// that follows reaches nothing, rather than enabling it with stale address lines
 		// and silently landing on whichever HAT they happen to point at.
+		//
+		// The lock stays held on this path, so the caller's paired deselect still
+		// balances - returning early without it would leave the bus locked forever.
 		gpio_set_level(PIN_SEL_EN, 1);
-		break;
+		return chainbus_select_invalid_position;
+	}
+
+	return chainbus_select_ok;
+}
+
+/*
+ * The legacy I2C driver collapses every no-acknowledge into a single ESP_FAIL - it cannot
+ * say whether the address or the data went unanswered - so this returns the generic
+ * chainbus_I2C_NACK rather than guessing between the two more specific codes.
+ */
+static chainbus_I2C_return_t i2c_map(esp_err_t err)
+{
+	switch (err)
+	{
+	case ESP_OK:
+		return chainbus_I2C_ok;
+	case ESP_ERR_INVALID_ARG:
+		return chainbus_I2C_invalid_argument;
+	case ESP_ERR_TIMEOUT:
+		return chainbus_I2C_timeout;
+	case ESP_FAIL:
+		return chainbus_I2C_NACK;
+	default:
+		return chainbus_I2C_generic_error;
 	}
 }
 
-void chainbus_I2C_write(uint8_t addr, const uint8_t *data, int32_t len)
+chainbus_I2C_return_t chainbus_I2C_write(uint8_t addr, const uint8_t *data, int32_t len)
 {
 
-	i2c_master_write_to_device(I2C_MASTER_NUM, addr, data, len, 1000 / portTICK_PERIOD_MS);
+	return i2c_map(i2c_master_write_to_device(I2C_MASTER_NUM, addr, data, len, 1000 / portTICK_PERIOD_MS));
 }
 
-void chainbus_I2C_read(uint8_t addr, uint8_t *data, int32_t len)
+chainbus_I2C_return_t chainbus_I2C_read(uint8_t addr, uint8_t *data, int32_t len)
 {
 
-	i2c_master_read_from_device(I2C_MASTER_NUM, addr, data, len, 1000 / portTICK_PERIOD_MS);
+	return i2c_map(i2c_master_read_from_device(I2C_MASTER_NUM, addr, data, len, 1000 / portTICK_PERIOD_MS));
 }
 
-void chainbus_I2C_write_read(uint8_t addr, const uint8_t *write_data, int32_t write_len, uint8_t *read_data, int32_t read_len)
+chainbus_I2C_return_t chainbus_I2C_write_read(uint8_t addr, const uint8_t *write_data, int32_t write_len, uint8_t *read_data, int32_t read_len)
 {
-	i2c_master_write_read_device(I2C_MASTER_NUM, addr, write_data, write_len, read_data, read_len, 1000 / portTICK_PERIOD_MS);
+	return i2c_map(i2c_master_write_read_device(I2C_MASTER_NUM, addr, write_data, write_len, read_data, read_len, 1000 / portTICK_PERIOD_MS));
 }
 
-void chainbus_I2C_config_speed(uint32_t speed)
+chainbus_I2C_return_t chainbus_I2C_config_speed(uint32_t speed)
 {
-	// do nothing. I don't care
+	// The rate is fixed at I2C_MASTER_FREQ_HZ in chainbus_init() and nothing here changes
+	// it, so the only honest answer is "yes" for the rate that is already live and
+	// "cannot do that" for the other one.
+	if (speed == chainbus_I2C_config_speed_standard)
+		return chainbus_I2C_ok;
+	if (speed == chainbus_I2C_config_speed_fast)
+		return chainbus_I2C_unsupported_config;
+
+	return chainbus_I2C_invalid_argument;
 }
 
 void chianbu_spi_write(const uint8_t *data, size_t len)
@@ -230,24 +275,39 @@ void chianbu_spi_write(const uint8_t *data, size_t len)
 	spi_device_transmit(spi_handle, &t);
 }
 
-void chainbus_SPI_CS_select()
+static chainbus_SPI_return_t spi_map(esp_err_t err)
 {
-	gpio_set_level(SPI_CS_IO, 0); // Active-low CS
+	switch (err)
+	{
+	case ESP_OK:
+		return chainbus_SPI_ok;
+	case ESP_ERR_INVALID_ARG:
+		return chainbus_SPI_invalid_argument;
+	case ESP_ERR_TIMEOUT:
+		return chainbus_SPI_timeout;
+	default:
+		return chainbus_SPI_generic_error;
+	}
 }
 
-void chainbus_SPI_CS_deselect()
+chainbus_SPI_return_t chainbus_SPI_CS_select()
 {
-	gpio_set_level(SPI_CS_IO, 1); // Deassert CS
+	return spi_map(gpio_set_level(SPI_CS_IO, 0)); // Active-low CS
 }
 
-void chainbus_SPI_raw_write(const uint8_t *write_data, int32_t write_len)
+chainbus_SPI_return_t chainbus_SPI_CS_deselect()
+{
+	return spi_map(gpio_set_level(SPI_CS_IO, 1)); // Deassert CS
+}
+
+chainbus_SPI_return_t chainbus_SPI_raw_write(const uint8_t *write_data, int32_t write_len)
 {
 	spi_transaction_t t;
 	memset(&t, 0, sizeof(t));
 	t.length = 8 * write_len;
 	t.tx_buffer = write_data;
 	t.rx_buffer = NULL;
-	spi_device_transmit(spi_handle, &t);
+	return spi_map(spi_device_transmit(spi_handle, &t));
 }
 
 /*
@@ -260,16 +320,17 @@ void chainbus_SPI_raw_write(const uint8_t *write_data, int32_t write_len)
  */
 #define SPI_BOUNCE_MAX 64
 
-static void spi_transfer_bounced(const uint8_t *write_data, uint8_t *read_data, int32_t len)
+static chainbus_SPI_return_t spi_transfer_bounced(const uint8_t *write_data, uint8_t *read_data, int32_t len)
 {
 	WORD_ALIGNED_ATTR uint8_t bounce[SPI_BOUNCE_MAX];
+	bool bounced = (read_data && len <= SPI_BOUNCE_MAX);
 
 	spi_transaction_t t;
 	memset(&t, 0, sizeof(t));
 	t.length = 8 * len;
 	t.tx_buffer = write_data;
 
-	if (read_data && len <= SPI_BOUNCE_MAX)
+	if (bounced)
 	{
 		memset(bounce, 0, sizeof(bounce));
 		// rxlength stays 0 (meaning "same as length") - it may not exceed length.
@@ -282,21 +343,31 @@ static void spi_transfer_bounced(const uint8_t *write_data, uint8_t *read_data, 
 		t.rx_buffer = read_data;
 	}
 
-	if (spi_device_transmit(spi_handle, &t) != ESP_OK)
-		return; // caller's buffer left untouched
+	esp_err_t err = spi_device_transmit(spi_handle, &t);
+	if (err != ESP_OK)
+	{
+		// caller's buffer left untouched. A read too long to bounce went to DMA as-is, so
+		// a rejected argument there is the alignment rule described above, not a bad call.
+		if (err == ESP_ERR_INVALID_ARG && read_data && !bounced)
+			return chainbus_SPI_buffer_alignment;
 
-	if (read_data && len <= SPI_BOUNCE_MAX)
+		return spi_map(err);
+	}
+
+	if (bounced)
 		memcpy(read_data, bounce, len);
+
+	return chainbus_SPI_ok;
 }
 
-void chainbus_SPI_raw_read(uint8_t *read_data, int32_t read_len)
+chainbus_SPI_return_t chainbus_SPI_raw_read(uint8_t *read_data, int32_t read_len)
 {
-	spi_transfer_bounced(NULL, read_data, read_len);
+	return spi_transfer_bounced(NULL, read_data, read_len);
 }
 
-void chainbus_SPI_raw_transfer(const uint8_t *write_data, uint8_t *read_data, int32_t len)
+chainbus_SPI_return_t chainbus_SPI_raw_transfer(const uint8_t *write_data, uint8_t *read_data, int32_t len)
 {
-	spi_transfer_bounced(write_data, read_data, len);
+	return spi_transfer_bounced(write_data, read_data, len);
 }
 
 /*
@@ -312,10 +383,10 @@ static int spi_cur_speed = SPI_DEFAULT_SPEED_HZ;
 static int spi_cur_mode = 0; // ESP numbering, 0-3
 static int spi_cur_bit_order = chainbus_SPI_config_bit_order_MSB_first;
 
-static void spi_reconfigure(int speed_hz, int esp_mode, int bit_order)
+static chainbus_SPI_return_t spi_reconfigure(int speed_hz, int esp_mode, int bit_order)
 {
 	if (speed_hz == spi_cur_speed && esp_mode == spi_cur_mode && bit_order == spi_cur_bit_order)
-		return; // already live, nothing to do
+		return chainbus_SPI_ok; // already live, nothing to do
 
 	spi_device_interface_config_t devcfg = {
 		.clock_speed_hz = speed_hz,
@@ -331,13 +402,15 @@ static void spi_reconfigure(int speed_hz, int esp_mode, int bit_order)
 
 	spi_device_handle_t new_handle;
 	if (spi_bus_add_device(SPI2_HOST, &devcfg, &new_handle) != ESP_OK)
-		return; // keep the working device rather than leaving the bus with none
+		return chainbus_SPI_config_failed; // keep the working device rather than leaving the bus with none
 
 	spi_bus_remove_device(spi_handle);
 	spi_handle = new_handle;
 	spi_cur_speed = speed_hz;
 	spi_cur_mode = esp_mode;
 	spi_cur_bit_order = bit_order;
+
+	return chainbus_SPI_ok;
 }
 
 // chainbus_SPI_config_mode_0..3 already match the ESP's 0-3, so this only range
@@ -349,10 +422,19 @@ static int spi_mode_to_esp(int mode)
 	return mode;
 }
 
-void chainbus_SPI_config(chainbus_SPI_config_t new_config)
+chainbus_SPI_return_t chainbus_SPI_config(chainbus_SPI_config_t new_config)
 {
 	// TODO: word_size is ignored - the ESP driver transfers whole bytes and the raw
 	// helpers are byte-oriented, so anything other than 8 needs the transfer layer
 	// reworked first.
-	spi_reconfigure(new_config.speed, spi_mode_to_esp(new_config.mode), new_config.bit_order);
+	// mode is unsigned, so only the upper bound needs checking here.
+	bool honoured = (new_config.word_size == 8) && (new_config.mode <= chainbus_SPI_config_mode_3);
+
+	chainbus_SPI_return_t ret = spi_reconfigure(new_config.speed, spi_mode_to_esp(new_config.mode), new_config.bit_order);
+	if (ret != chainbus_SPI_ok)
+		return ret;
+
+	// The settings were applied, but with a fallback substituted for something that was
+	// asked for and cannot be done - say so rather than reporting a clean success.
+	return honoured ? chainbus_SPI_ok : chainbus_SPI_unsupported_config;
 }

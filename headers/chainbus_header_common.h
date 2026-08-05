@@ -1,6 +1,6 @@
 #pragma once
 
-// Chainbus header V0.3
+// Chainbus header V0.4
 
 #include <stdint.h>
 typedef uint16_t Hat_position;

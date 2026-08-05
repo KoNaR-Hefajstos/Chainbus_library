@@ -3,7 +3,7 @@
 
 #include <stddef.h>
 
-// Chainbus header V0.3
+// Chainbus header V0.4
 
 /**
  * @brief Initializes the Chainbus system.

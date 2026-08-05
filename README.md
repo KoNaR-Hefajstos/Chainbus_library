@@ -30,3 +30,4 @@ main.c - Example code for GPIO basic hat blinky
 ## Changelog
 Chainbus header V0.2 -> inital version
 V0.3 -> added some documentation to functions
+V0.4 -> added returns to functions

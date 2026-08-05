@@ -3,16 +3,25 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-// Chainbus header V0.3
+// Chainbus header V0.4
 
 /*
 Documentation
 All functions are blocking
+All functions return 0 on success, greater than 0 on failure
 
 */
 
 /**************************************************************************************************/
 // Generic
+
+typedef enum chainbus_select_return
+{
+	chainbus_select_ok = 0,
+	chainbus_select_generic_error,
+	chainbus_select_invalid_position, // pos outside 1-8
+	chainbus_select_not_initialised,  // chainbus_init() has not run yet
+} chainbus_select_return_t;
 
 /**
  * @brief Connects one HAT to the shared SPI, I2C and UART buses and puts RTOS mutex lock on chainbus
@@ -23,7 +32,7 @@ All functions are blocking
  *
  * @param pos HAT position, 1 to 8
  */
-void chainbus_select_hat(Hat_position pos);
+chainbus_select_return_t chainbus_select_hat(Hat_position pos);
 
 /**
  * @brief Disconnects every HAT from the buses and releases the bus lock.
@@ -31,10 +40,23 @@ void chainbus_select_hat(Hat_position pos);
  *
  * @param pos HAT position, 1 to 8
  */
-void chainbus_deselect_hat(Hat_position pos);
+chainbus_select_return_t chainbus_deselect_hat(Hat_position pos);
 
 /**************************************************************************************************/
 // I2C
+
+typedef enum chainbus_I2C_return
+{
+	chainbus_I2C_ok = 0,
+	chainbus_I2C_generic_error,
+	chainbus_I2C_invalid_argument,
+	chainbus_I2C_timeout,	 // bus busy, transfer did not finish in time
+	chainbus_I2C_NACK,		 // not acknowledged, backend cannot say which phase
+	chainbus_I2C_address_NACK,	 // nobody answered at that address
+	chainbus_I2C_data_NACK,		 // device quit part way through the data
+	chainbus_I2C_bus_error,		 // arbitration lost, stuck line
+	chainbus_I2C_unsupported_config, // backend cannot produce the requested speed
+} chainbus_I2C_return_t;
 
 /**
  * @brief Writes bytes to an I2C device on the selected HAT.
@@ -46,7 +68,7 @@ void chainbus_deselect_hat(Hat_position pos);
  * @param len  How many bytes to send.
  *
  */
-void chainbus_I2C_write(uint8_t addr, const uint8_t *data, int32_t len);
+chainbus_I2C_return_t chainbus_I2C_write(uint8_t addr, const uint8_t *data, int32_t len);
 
 /**
  * @brief Reads bytes from an I2C device on the selected HAT.
@@ -58,7 +80,7 @@ void chainbus_I2C_write(uint8_t addr, const uint8_t *data, int32_t len);
  * @param len  How many bytes to read.
  *
  */
-void chainbus_I2C_read(uint8_t addr, uint8_t *data, int32_t len);
+chainbus_I2C_return_t chainbus_I2C_read(uint8_t addr, uint8_t *data, int32_t len);
 
 /**
  * @brief Writes then reads in one transaction, without releasing the bus in between.
@@ -74,7 +96,7 @@ void chainbus_I2C_read(uint8_t addr, uint8_t *data, int32_t len);
  * @param read_len   How many bytes to read.
  *
  */
-void chainbus_I2C_write_read(uint8_t addr, const uint8_t *write_data, int32_t write_len, uint8_t *read_data, int32_t read_len); // uses repeated write
+chainbus_I2C_return_t chainbus_I2C_write_read(uint8_t addr, const uint8_t *write_data, int32_t write_len, uint8_t *read_data, int32_t read_len); // uses repeated write
 
 #define chainbus_I2C_config_speed_standard 1
 #define chainbus_I2C_config_speed_fast 2
@@ -86,7 +108,7 @@ void chainbus_I2C_write_read(uint8_t addr, const uint8_t *write_data, int32_t wr
  *              chainbus_I2C_config_speed_fast (400 kHz).
  *
  */
-void chainbus_I2C_config_speed(uint32_t speed);
+chainbus_I2C_return_t chainbus_I2C_config_speed(uint32_t speed);
 
 // void chainbus_I2C_ping(uint8_t addr, bool was_ACK); // so like write of 0 bytes, returns 0 for device, ping_none for nobody
 // void chainbus_I2C_reset_bus();
@@ -99,6 +121,17 @@ void chainbus_I2C_config_speed(uint32_t speed);
 // SPI
 // len is in bytes
 
+typedef enum chainbus_SPI_return
+{
+	chainbus_SPI_ok = 0,
+	chainbus_SPI_generic_error,
+	chainbus_SPI_invalid_argument,
+	chainbus_SPI_timeout,
+	chainbus_SPI_buffer_alignment,	 // rx buffer rejected by DMA, see chainbus_SPI_raw_read()
+	chainbus_SPI_unsupported_config, // word_size, mode or bit_order the backend cannot do
+	chainbus_SPI_config_failed,		 // reconfigure failed, previous settings are still live
+} chainbus_SPI_return_t;
+
 /**
  * @brief Clocks bytes out on MOSI and doesn't save what comes back on MISO.
  *
@@ -108,7 +141,7 @@ void chainbus_I2C_config_speed(uint32_t speed);
  * @param write_data Bytes to send.
  * @param write_len  How many bytes to send.
  */
-void chainbus_SPI_raw_write(const uint8_t *write_data, int32_t write_len);
+chainbus_SPI_return_t chainbus_SPI_raw_write(const uint8_t *write_data, int32_t write_len);
 
 /**
  * @brief Clocks read_len bytes in on MISO, sending zeros on MOSI.
@@ -119,7 +152,7 @@ void chainbus_SPI_raw_write(const uint8_t *write_data, int32_t write_len);
  * @param read_len  How many bytes to read.
  *.
  */
-void chainbus_SPI_raw_read(uint8_t *read_data, int32_t read_len);
+chainbus_SPI_return_t chainbus_SPI_raw_read(uint8_t *read_data, int32_t read_len);
 
 /**
  * @brief Full-duplex transfer - sends and receives len bytes at the same time.
@@ -134,7 +167,7 @@ void chainbus_SPI_raw_read(uint8_t *read_data, int32_t read_len);
  *
  * @note Same failure and alignment behaviour as chainbus_SPI_raw_read().
  */
-void chainbus_SPI_raw_transfer(const uint8_t *write_data, uint8_t *read_data, int32_t len);
+chainbus_SPI_return_t chainbus_SPI_raw_transfer(const uint8_t *write_data, uint8_t *read_data, int32_t len);
 
 // SPI chip-select, not the same thing as chainbus_select_hat()
 // select hat -> connect SPI, I2C, UART buses to hat
@@ -145,12 +178,12 @@ void chainbus_SPI_raw_transfer(const uint8_t *write_data, uint8_t *read_data, in
  *
 
  */
-void chainbus_SPI_CS_select(); // Drives GPIO low
+chainbus_SPI_return_t chainbus_SPI_CS_select(); // Drives GPIO low
 
 /**
  * @brief Releases SPI chip-select by driving the CS pin high.
  */
-void chainbus_SPI_CS_deselect(); // drives GPIO high
+chainbus_SPI_return_t chainbus_SPI_CS_deselect(); // drives GPIO high
 
 typedef struct
 {
@@ -191,10 +224,23 @@ typedef struct
  * @note An unrecognised mode falls back to chainbus_SPI_config_mode_0, and any bit_order
  *       other than chainbus_SPI_config_bit_order_LSB_first is treated as MSB first.
  */
-void chainbus_SPI_config(chainbus_SPI_config_t new_config);
+chainbus_SPI_return_t chainbus_SPI_config(chainbus_SPI_config_t new_config);
 
 /**************************************************************************************************/
 // UART
+
+typedef enum chainbus_UART_return
+{
+	chainbus_UART_ok = 0,
+	chainbus_UART_generic_error,
+	chainbus_UART_invalid_argument,
+	chainbus_UART_timeout,
+	chainbus_UART_framing_error,
+	chainbus_UART_parity_error,
+	chainbus_UART_overrun,			  // bytes lost, the read buffer overflowed
+	chainbus_UART_not_enough_bytes,	  // asked for more than is queued
+	chainbus_UART_unsupported_config, // frame format the backend cannot produce
+} chainbus_UART_return_t;
 
 /**
  * @brief Sends bytes on the UART of the selected HAT.
@@ -202,7 +248,7 @@ void chainbus_SPI_config(chainbus_SPI_config_t new_config);
  * @param write_data Bytes to send.
  * @param write_len  How many bytes to send.
  */
-void chainbus_UART_send(const uint8_t *write_data, int32_t write_len);
+chainbus_UART_return_t chainbus_UART_send(const uint8_t *write_data, int32_t write_len);
 
 /**
  * @brief Takes bytes out of the UART read buffer.
@@ -213,7 +259,7 @@ void chainbus_UART_send(const uint8_t *write_data, int32_t write_len);
  * @param read_data Buffer that receives the bytes, at least @p read_len long.
  * @param read_len  How many bytes to take.
  */
-void chainbus_UART_read_buffer(uint8_t *read_data, int32_t read_len);
+chainbus_UART_return_t chainbus_UART_read_buffer(uint8_t *read_data, int32_t read_len);
 
 /**
  * @brief How many bytes are already waiting in the read buffer.
@@ -222,12 +268,12 @@ void chainbus_UART_read_buffer(uint8_t *read_data, int32_t read_len);
  *
  * @param how_many_bytes Receives the count.
  */
-void chainbus_UART_read_buffer_how_many_bytes(int32_t *how_many_bytes);
+chainbus_UART_return_t chainbus_UART_read_buffer_how_many_bytes(int32_t *how_many_bytes);
 
 /**
  * @brief Drops every queued byte and clears any framing/parity/overrun error left behind.
  */
-void chainbus_UART_clear_read_buffer();
+chainbus_UART_return_t chainbus_UART_clear_read_buffer();
 
 typedef struct
 {
@@ -259,4 +305,4 @@ typedef struct
  *                   hardware cannot produce exactly becomes the nearest one it can),
  *                   word length, stop bits and parity.
  */
-void chainbus_UART_config(chainbus_UART_config_t new_config);
+chainbus_UART_return_t chainbus_UART_config(chainbus_UART_config_t new_config);
