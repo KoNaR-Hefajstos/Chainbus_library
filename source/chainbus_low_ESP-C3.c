@@ -349,7 +349,7 @@ static int spi_mode_to_esp(int mode)
 	return mode;
 }
 
-void chainbus_SPI_config_full(chainbus_SPI_config new_config)
+void chainbus_SPI_config(chainbus_SPI_config_t new_config)
 {
 	// TODO: word_size is ignored - the ESP driver transfers whole bytes and the raw
 	// helpers are byte-oriented, so anything other than 8 needs the transfer layer

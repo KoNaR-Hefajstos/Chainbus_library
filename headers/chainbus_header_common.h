@@ -1,6 +1,6 @@
 #pragma once
 
-// Chainbus header V0.2
+// Chainbus header V0.3
 
 #include <stdint.h>
 typedef uint16_t Hat_position;
@@ -24,3 +24,24 @@ typedef struct
 	uint32_t hardware_revision;
 
 } hat_data;
+
+// Never delay while a HAT is selected - deselect, wait, reselect
+// Holding the bus across a wait blocks every other HAT from using it
+
+/**
+ * @brief Busy-waits for the given number of microseconds
+ * @param us Microseconds to wait.
+ */
+void chainbus_delay_us(uint32_t us);
+
+/**
+ * @brief Waits for the given number of milliseconds, RTOS non-blocking
+ * @param ms Milliseconds to wait.
+ */
+void chainbus_delay_ms(uint32_t ms);
+
+/**
+ * @brief Waits for the given number of seconds, RTOS non-blocking
+ * @param s Seconds to wait.
+ */
+void chainbus_delay_s(uint32_t s);
