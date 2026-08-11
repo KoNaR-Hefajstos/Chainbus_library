@@ -41,14 +41,15 @@ static const struct
 	GPIO_TypeDef *port;
 	uint16_t pin;
 } hat_sel[8] = {
-	{GPIOA, GPIO_PIN_7}, // addr0 -> position 1
-	{GPIOA, GPIO_PIN_6}, // addr1 -> position 2
-	{GPIOA, GPIO_PIN_5}, // addr2 -> position 3
-	{GPIOC, GPIO_PIN_9}, // addr3 -> position 4
-	{GPIOB, GPIO_PIN_5}, // addr4 -> position 5
+	{GPIOC, GPIO_PIN_9}, // addr3 -> position 1
+	{GPIOB, GPIO_PIN_5}, // addr4 -> position 2
+	{GPIOA, GPIO_PIN_7}, // addr0 -> position 3
+	{GPIOA, GPIO_PIN_6}, // addr1 -> position 4
+	{GPIOA, GPIO_PIN_5}, // addr2 -> position 5
 	{GPIOC, GPIO_PIN_6}, // addr5 -> position 6
 	{GPIOC, GPIO_PIN_7}, // addr6 -> position 7
 	{GPIOC, GPIO_PIN_8}, // addr7 -> position 8
+						 // Dont ask me why it's this way. Artem's fault
 };
 
 #define HAT_SEL_COUNT 8
@@ -545,8 +546,8 @@ chainbus_SPI_return_t chainbus_SPI_config(chainbus_SPI_config_t new_config)
 #define UART_ERR_PARITY 0x04
 
 static volatile uint8_t uart_rx_buf[UART_RX_BUF_SIZE];
-static volatile uint16_t uart_rx_head; // moved by the interrupt only
-static volatile uint16_t uart_rx_tail; // moved by the reader only
+static volatile uint16_t uart_rx_head;	// moved by the interrupt only
+static volatile uint16_t uart_rx_tail;	// moved by the reader only
 static volatile uint8_t uart_rx_errors; // sticky until read or cleared
 
 /*
