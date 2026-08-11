@@ -1,8 +1,12 @@
 /*
- * Chainbus low level implementation for STM32F405RG (LQFP64), STM32Cube HAL + FreeRTOS.
+ * Chainbus low level implementation for STM32F405RG (LQFP64), STM32Cube HAL, bare metal.
  *
  * This is an alternative to chainbus_low_ESP-C3.c, not a companion - both define the same
  * functions, so exactly one of them belongs in any given build.
+ *
+ * Every call here runs to completion before it returns and there is only one flow of
+ * execution, so unlike the ESP-C3 backend nothing locks the bus - a select cannot land
+ * while another HAT is still mid-transfer.
  *
  * chainbus_init() brings up the pins and all three peripherals itself. It assumes
  * HAL_Init() and the application's SystemClock_Config() have already run; it never touches
@@ -13,8 +17,7 @@
  *  - PB3, PB4 and PA15 are the JTAG pins (JTDO, NJTRST, JTDI). Claiming them for SPI3 and
  *    the chip select ends JTAG debugging. SWD on PA13/PA14 is untouched and still works.
  *  - The HAL's blocking calls time out against HAL_GetTick(), so whatever the project uses
- *    as the HAL tick source has to be running. Worth checking if the tick was moved off
- *    SysTick to make room for FreeRTOS.
+ *    as the HAL tick source has to be running.
  */
 
 #include "chainbus_header_hat.h"
@@ -22,13 +25,7 @@
 
 #include "stm32f4xx_hal.h"
 
-#include "FreeRTOS.h"
-#include "semphr.h"
-#include "task.h"
-
 #include <stdbool.h>
-
-static SemaphoreHandle_t chainbus_mutex;
 
 /*
  * PINOUT
@@ -107,8 +104,6 @@ static void gpio_init_pin(GPIO_TypeDef *port, uint16_t pin, uint32_t mode, uint3
 
 void chainbus_init()
 {
-	chainbus_mutex = xSemaphoreCreateMutex();
-
 	__HAL_RCC_GPIOA_CLK_ENABLE();
 	__HAL_RCC_GPIOB_CLK_ENABLE();
 	__HAL_RCC_GPIOC_CLK_ENABLE();
@@ -184,13 +179,13 @@ void chainbus_init()
 	huart3.Init.OverSampling = UART_OVERSAMPLING_16;
 	HAL_UART_Init(&huart3);
 
-	// The receive interrupt calls no FreeRTOS API, so its priority is not bound by
-	// configMAX_SYSCALL_INTERRUPT_PRIORITY. It is parked low anyway.
+	// Parked low. All the handler does is move a byte into a ring buffer, and nothing
+	// waits on it.
 	HAL_NVIC_SetPriority(USART3_IRQn, 6, 0);
 	HAL_NVIC_EnableIRQ(USART3_IRQn);
 	__HAL_UART_ENABLE_IT(&huart3, UART_IT_RXNE);
 
-	// Leaves every selection line high and hands back the lock the mutex starts with.
+	// Leaves every selection line high, so nothing is on the bus until the first select.
 	chainbus_deselect_hat(0);
 }
 
@@ -204,17 +199,16 @@ void chainbus_delay_us(uint32_t us)
 	}
 }
 
-/**
- * @brief Millisecond delay (Non-blocking / Yields to FreeRTOS)
+/*
+ * A millisecond at a time rather than one call of ms * 1000 microseconds, because the cycle
+ * count in chainbus_delay_us() is a uint32_t and wraps somewhere past 25 seconds at 168 MHz.
  */
 void chainbus_delay_ms(uint32_t ms)
 {
-	vTaskDelay(pdMS_TO_TICKS(ms));
+	while (ms--)
+		chainbus_delay_us(1000);
 }
 
-/**
- * @brief Second delay (Non-blocking / Yields to FreeRTOS)
- */
 void chainbus_delay_s(uint32_t s)
 {
 	chainbus_delay_ms(s * 1000);
@@ -222,27 +216,14 @@ void chainbus_delay_s(uint32_t s)
 
 chainbus_select_return_t chainbus_deselect_hat(Hat_position pos)
 {
-	if (chainbus_mutex == NULL)
-		return chainbus_select_not_initialised;
-
 	for (int i = 0; i < HAT_SEL_COUNT; i++)
 		HAL_GPIO_WritePin(hat_sel[i].port, hat_sel[i].pin, GPIO_PIN_SET);
-
-	// pdFALSE means this task was not holding the lock, so the select it should have been
-	// paired with never happened. The bus is deselected either way.
-	if (xSemaphoreGive(chainbus_mutex) != pdTRUE)
-		return chainbus_select_generic_error;
 
 	return chainbus_select_ok;
 }
 
 chainbus_select_return_t chainbus_select_hat(Hat_position pos)
 {
-	if (chainbus_mutex == NULL)
-		return chainbus_select_not_initialised;
-
-	xSemaphoreTake(chainbus_mutex, portMAX_DELAY);
-
 	// Raise everything first so no two lines are ever low at once, whatever was selected
 	// before.
 	for (int i = 0; i < HAT_SEL_COUNT; i++)
@@ -252,9 +233,6 @@ chainbus_select_return_t chainbus_select_hat(Hat_position pos)
 	{
 		// Positions are 1-8. Anything else leaves every line high so the traffic that
 		// follows reaches nothing, rather than landing on an arbitrary HAT.
-		//
-		// The lock stays held on this path, so the caller's paired deselect still
-		// balances - returning early without it would leave the bus locked forever.
 		return chainbus_select_invalid_position;
 	}
 
